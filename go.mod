@@ -1,4 +1,4 @@
-module github.com/eriklupander/tradfri-go
+module github.com/eskpil/tradfri-go
 
 go 1.21
 

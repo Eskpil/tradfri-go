@@ -3,31 +3,21 @@ package main
 import (
 	"fmt"
 	"log"
-	"net"
 	"os"
-	"sync"
 	"time"
 
 	"github.com/eriklupander/dtls"
 
-	"github.com/eriklupander/tradfri-go/grpc_server"
-	pb "github.com/eriklupander/tradfri-go/grpc_server/golang"
-	"github.com/eriklupander/tradfri-go/router"
 	"github.com/eriklupander/tradfri-go/tradfri"
-	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
-	grpc_logrus "github.com/grpc-ecosystem/go-grpc-middleware/logging/logrus"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/reflection"
 )
 
 var configFlags = pflag.NewFlagSet("config", pflag.ExitOnError)
 var commandFlags = pflag.NewFlagSet("commands", pflag.ExitOnError)
 
 func init() {
-
 	configFlags.String("gateway_ip", "", "IP to your gateway. No protocol or port here!")
 	configFlags.String("gateway_address", "", "Address to your gateway. Including port here!")
 	configFlags.String("psk", "", "Pre-shared key on bottom of Gateway")
@@ -39,9 +29,6 @@ func init() {
 	commandFlags.String("get", "", "URL to GET")
 	commandFlags.String("put", "", "URL to PUT")
 	commandFlags.String("payload", "", "Payload for PUT")
-	commandFlags.String("listen_host", "", "Host to listen on. Default empty allows connections from anywhere. Use \"127.0.0.1\" to only allow local connections.")
-	commandFlags.Int("port", 8080, "Port of the REST server. Set to 0 to disable REST server.")
-	commandFlags.Int("grpc_port", 8081, "Port of the gRPC server. Set to 0 to disable gRPC server.")
 
 	commandFlags.AddFlagSet(configFlags)
 	_ = commandFlags.Parse(os.Args[1:])
@@ -94,14 +81,10 @@ func main() {
 	}
 	psk := viper.GetString("psk")
 	clientID := viper.GetString("client_id")
-	serverMode, _ := commandFlags.GetBool("server")
 	authenticate, _ := commandFlags.GetBool("authenticate")
 	get, getErr := commandFlags.GetString("get")
 	put, putErr := commandFlags.GetString("put")
 	payload, _ := commandFlags.GetString("payload")
-	listenHost, _ := commandFlags.GetString("listen_host")
-	port, _ := commandFlags.GetInt("port")
-	grpcPort, _ := commandFlags.GetInt("grpc_port")
 
 	// Handle the special authenticate use-case
 	if authenticate {
@@ -111,43 +94,15 @@ func main() {
 
 	checkRequiredConfig(gatewayAddress, clientID, psk)
 
-	// Check running mode...
-	if serverMode {
-		logrus.Info("Running in server mode")
-
-		tc := tradfri.NewTradfriClient(gatewayAddress, clientID, psk)
-		wg := sync.WaitGroup{}
-		// REST
-		if port > 0 {
-			wg.Add(1)
-			logrus.Infof("REST: %s:%d", listenHost, port)
-			go func() {
-				defer wg.Done()
-				router.SetupChi(tc, fmt.Sprintf("%s:%d", listenHost, port))
-			}()
-		}
-		// gRPC
-		if grpcPort > 0 {
-			wg.Add(1)
-			logrus.Infof("gRPC: %s:%d", listenHost, grpcPort)
-			go func() {
-				defer wg.Done()
-				go registerGrpcServer(tc, fmt.Sprintf("%s:%d", listenHost, grpcPort))
-			}()
-		}
-
-		wg.Wait()
+	// client mode
+	if getErr == nil && get != "" {
+		resp, _ := tradfri.NewTradfriClient(gatewayAddress, clientID, psk).Get(get)
+		logrus.Infof("%v", string(resp.Payload))
+	} else if putErr == nil && put != "" {
+		resp, _ := tradfri.NewTradfriClient(gatewayAddress, clientID, psk).Put(put, payload)
+		logrus.Infof("%v", string(resp.Payload))
 	} else {
-		// client mode
-		if getErr == nil && get != "" {
-			resp, _ := tradfri.NewTradfriClient(gatewayAddress, clientID, psk).Get(get)
-			logrus.Infof("%v", string(resp.Payload))
-		} else if putErr == nil && put != "" {
-			resp, _ := tradfri.NewTradfriClient(gatewayAddress, clientID, psk).Put(put, payload)
-			logrus.Infof("%v", string(resp.Payload))
-		} else {
-			logrus.Info("No client operation was specified, supported one(s) are: get, put, authenticate")
-		}
+		logrus.Info("No client operation was specified, supported one(s) are: get, put, authenticate")
 	}
 
 }
@@ -195,25 +150,6 @@ func performTokenExchange(gatewayAddress, clientID, psk string) {
 		fail(err.Error())
 	}
 	logrus.Info("Your configuration including the new PSK and clientID has been written to config.json, keep this file safe!")
-}
-
-func registerGrpcServer(tc *tradfri.Client, listenAddress string) {
-	s := grpc.NewServer(
-		grpc_middleware.WithUnaryServerChain(
-			grpc_logrus.UnaryServerInterceptor(logrus.NewEntry(logrus.StandardLogger())),
-		),
-		grpc_middleware.WithStreamServerChain(
-			grpc_logrus.StreamServerInterceptor(logrus.NewEntry(logrus.StandardLogger())),
-		),
-	)
-	pb.RegisterTradfriServiceServer(s, grpc_server.New(tc))
-	lis, err := net.Listen("tcp", listenAddress)
-	if err != nil {
-		logrus.Infof("failed to listen on grpc %s: %v\n", listenAddress, err.Error())
-		return
-	}
-	reflection.Register(s)
-	logrus.Info(s.Serve(lis))
 }
 
 func fail(msg string) {
