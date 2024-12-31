@@ -1,17 +1,16 @@
 package dtlscoap
 
 import (
-	"github.com/sirupsen/logrus"
-	"os"
-	"time"
+	"fmt"
+	"net"
 
 	"github.com/dustin/go-coap"
-	"github.com/eriklupander/dtls"
+	"github.com/pion/dtls"
 )
 
 // DtlsClient provides an domain-agnostic CoAP-client with DTLS transport.
 type DtlsClient struct {
-	peer           *dtls.Peer
+	conn           *dtls.Conn
 	msgID          uint16
 	gatewayAddress string
 	clientID       string
@@ -30,57 +29,51 @@ func NewDtlsClient(gatewayAddress, clientID, psk string) *DtlsClient {
 }
 
 func (dc *DtlsClient) connect() {
-	dc.setupKeystore()
-
-	listener, err := dtls.NewUdpListener(":0", time.Second*900)
-	if err != nil {
-		panic(err.Error())
+	config := dtls.Config{
+		CipherSuites:    []dtls.CipherSuiteID{dtls.TLS_PSK_WITH_AES_128_CCM_8, dtls.TLS_PSK_WITH_AES_128_GCM_SHA256},
+		PSKIdentityHint: []byte(dc.clientID),
+		PSK: func(data []byte) ([]byte, error) {
+			return []byte(dc.psk), nil
+		},
 	}
 
-	peerParams := &dtls.PeerParams{
-		Addr:             dc.gatewayAddress,
-		Identity:         dc.clientID,
-		HandshakeTimeout: time.Second * 15}
-	logrus.Infof("Connecting to peer at %v\n", dc.gatewayAddress)
-
-	dc.peer, err = listener.AddPeerWithParams(peerParams)
-	if err != nil {
-		logrus.Infof("Unable to connect to Gateway at %v: %v\n", dc.gatewayAddress, err.Error())
-		os.Exit(1)
+	ip := net.ParseIP(dc.gatewayAddress)
+	addr := &net.UDPAddr{
+		IP:   ip,
+		Port: 5684,
+		Zone: "",
 	}
-	dc.peer.UseQueue(true)
-	logrus.Infof("DTLS connection established to %v\n", dc.gatewayAddress)
+
+	conn, err := dtls.Dial("udp", addr, &config)
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	dc.conn = conn
 }
 
 // Call writes the supplied coap.Message to the peer
 func (dc *DtlsClient) Call(req coap.Message) (coap.Message, error) {
-	logrus.Infof("Calling %v %v", req.Code.String(), req.PathString())
 	data, err := req.MarshalBinary()
 	if err != nil {
 		return coap.Message{}, err
 	}
-	err = dc.peer.Write(data)
 
+	_, err = dc.conn.Write(data)
 	if err != nil {
 		return coap.Message{}, err
 	}
 
-	respData, err := dc.peer.Read(time.Second)
+	out := make([]byte, 4096)
+	n, err := dc.conn.Read(out)
 	if err != nil {
 		return coap.Message{}, err
 	}
 
-	msg, err := coap.ParseMessage(respData)
+	msg, err := coap.ParseMessage(out[:n])
 	if err != nil {
 		return coap.Message{}, err
 	}
-
-	logrus.Info("Response: ")
-	logrus.Infof("MessageID: %v\n", msg.MessageID)
-	logrus.Infof("Type: %v\n", msg.Type)
-	logrus.Infof("Code: %v\n", msg.Code)
-	logrus.Infof("Token: %v\n", msg.Token)
-	logrus.Infof("Payload: %v\n", string(msg.Payload))
 
 	return msg, nil
 }
@@ -128,10 +121,4 @@ func (dc *DtlsClient) BuildPOSTMessage(path string, payload string) coap.Message
 	req.SetPathString(path)
 
 	return req
-}
-
-func (dc *DtlsClient) setupKeystore() {
-	mks := dtls.NewKeystoreInMemory()
-	dtls.SetKeyStores([]dtls.Keystore{mks})
-	mks.AddKey(dc.clientID, []byte(dc.psk))
 }

@@ -4,13 +4,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"strings"
 
 	"github.com/dustin/go-coap"
-	"github.com/eriklupander/tradfri-go/dtlscoap"
-	"github.com/eriklupander/tradfri-go/model"
-	"github.com/sirupsen/logrus"
+	"github.com/eskpil/tradfri-go/dtlscoap"
+	"github.com/eskpil/tradfri-go/model"
 )
 
 const (
@@ -47,19 +47,14 @@ func NewTradfriClient(gatewayAddress, clientID, psk string) *Client {
 	return client
 }
 
-// Yo who decided it would be a good idea to have the deviceId be an int in all the models, but here every function wants it as a string, its stupid
-// But i aint changin it because it could break code that depends on these functions (It would be a great change tho)
-
 // PutDeviceDimming sets the dimming property (0-255) of the specified device.
 // The device must be a bulb supporting dimming, otherwise the call if ineffectual.
 func (tc *Client) PutDeviceDimming(deviceId int, dimming int) (model.Result, error) {
 	payload := fmt.Sprintf(`{ "3311": [{ "5851": %d }] }`, dimming)
-	logrus.Infof("Payload is: %v", payload)
 	resp, err := tc.Call(tc.dtlsclient.BuildPUTMessage(toDeviceUri(deviceId), payload))
 	if err != nil {
 		return model.Result{}, err
 	}
-	logrus.Infof("Response: %+v", resp)
 	return model.Result{Msg: resp.Code.String()}, nil
 }
 
@@ -69,12 +64,10 @@ func (tc *Client) PutDevicePower(deviceId int, power int) (model.Result, error) 
 		return model.Result{}, fmt.Errorf("invalid value for setting power state, must be 1 or 0")
 	}
 	payload := fmt.Sprintf(`{ "3311": [{ "5850": %d }] }`, power)
-	logrus.Infof("Payload is: %v", payload)
 	resp, err := tc.Call(tc.dtlsclient.BuildPUTMessage(toDeviceUri(deviceId), payload))
 	if err != nil {
 		return model.Result{}, err
 	}
-	logrus.Infof("Response: %+v", resp)
 	return model.Result{Msg: resp.Code.String()}, nil
 }
 
@@ -84,12 +77,10 @@ func (tc *Client) PutDeviceState(deviceId int, power int, dimmer int) (model.Res
 		return model.Result{}, fmt.Errorf("invalid value for setting power state, must be 1 or 0")
 	}
 	payload := fmt.Sprintf(`{ "3311": [{ "5850": %d, "5851": %d}] }`, power, dimmer) // , "5706": "%s"
-	logrus.Infof("Payload is: %v", payload)
 	resp, err := tc.Call(tc.dtlsclient.BuildPUTMessage(toDeviceUri(deviceId), payload))
 	if err != nil {
 		return model.Result{}, err
 	}
-	logrus.Infof("Response: %+v", resp)
 	return model.Result{Msg: resp.Code.String()}, nil
 }
 
@@ -103,12 +94,10 @@ func (tc *Client) PutDeviceColor(deviceId int, x, y int) (model.Result, error) {
 // PutDeviceColorTimed does the same as PutDeviceColor but it gives you the ability to change the speed at which the color changes
 func (tc *Client) PutDeviceColorTimed(deviceId int, x, y int, transitionTimeMS int) (model.Result, error) {
 	payload := fmt.Sprintf(`{ "3311": [ {"5709": %d, "5710": %d, "5712": %d}] }`, x, y, transitionTimeMS/100)
-	logrus.Infof("Payload is: %v", payload)
 	resp, err := tc.Call(tc.dtlsclient.BuildPUTMessage(toDeviceUri(deviceId), payload))
 	if err != nil {
 		return model.Result{}, err
 	}
-	logrus.Infof("Response: %+v", resp)
 	return model.Result{Msg: resp.Code.String()}, nil
 }
 
@@ -153,24 +142,20 @@ func (tc *Client) PutDeviceColorHSLTimed(deviceId int, hue float64, saturation f
 	lightnessInt := int(mapRange(lightness, 0, 100, 0, 254))
 
 	payload := fmt.Sprintf(`{ "3311": [ {"5707": %d, "5708": %d, "5851": %d, "5712": %d}] }`, hueInt, saturationInt, lightnessInt, transitionTimeMS/100)
-	logrus.Infof("Payload is: %v", payload)
 	resp, err := tc.Call(tc.dtlsclient.BuildPUTMessage(toDeviceUri(deviceId), payload))
 	if err != nil {
 		return model.Result{}, err
 	}
-	logrus.Infof("Response: %+v", resp)
 	return model.Result{Msg: resp.Code.String()}, nil
 }
 
 // PutDevicePositioning sets the positioning property (0-100) of the specified device.
 func (tc *Client) PutDevicePositioning(deviceId int, positioning float32) (model.Result, error) {
 	payload := fmt.Sprintf(`{ "15015": [{ "5536": %f }] }`, positioning)
-	logrus.Infof("Payload is: %v", payload)
 	resp, err := tc.Call(tc.dtlsclient.BuildPUTMessage(toDeviceUri(deviceId), payload))
 	if err != nil {
 		return model.Result{}, err
 	}
-	logrus.Infof("Response: %+v", resp)
 	return model.Result{Msg: resp.Code.String()}, nil
 }
 
@@ -180,14 +165,14 @@ func (tc *Client) ListGroups() ([]model.Group, error) {
 
 	resp, err := tc.Call(tc.dtlsclient.BuildGETMessage("/15004"))
 	if err != nil {
-		logrus.WithError(err).Error("Unable to call Trådfri Gateway")
+		slog.Error("Unable to call Trådfri Gateway", slog.String("err", err.Error()))
 		return groups, err
 	}
 
 	groupIds := make([]int, 0)
 	err = json.Unmarshal(resp.Payload, &groupIds)
 	if err != nil {
-		logrus.Info("Unable to parse groups list into JSON: " + err.Error())
+		slog.Error("Failed to unmarshal groups", slog.String("err", err.Error()))
 		return groups, err
 	}
 
@@ -293,14 +278,14 @@ func (tc *Client) AuthExchange(clientId string) (model.TokenExchange, error) {
 	// Send CoAP message for token exchange
 	resp, err := tc.Call(req)
 	if err != nil {
-		logrus.WithError(err).Fatal("error performing call to Gateway for token exchange")
+		slog.Error("error performing call to Gateway for token exchange", slog.String("err", err.Error()))
 	}
 
 	// Handle response and return
 	token := model.TokenExchange{}
 	err = json.Unmarshal(resp.Payload, &token)
 	if err != nil {
-		logrus.WithError(err).Fatal("error unmarhsalling response from Gateway for token exchange")
+		slog.Error("error unmarshalling response from Gateway for token exchange", slog.String("err", err.Error()))
 	}
 	return token, nil
 }
